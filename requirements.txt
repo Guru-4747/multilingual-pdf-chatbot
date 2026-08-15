@@ -9,3 +9,7 @@ google-genai
 pymupdf          # PDF text extraction, page rasterization for scanned pages, embedded image extraction
 python-docx       # Word (.docx) support
 python-pptx       # PowerPoint (.pptx) support
+streamlit
+transformers
+torch
+torchvision
