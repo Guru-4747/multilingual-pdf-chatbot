@@ -11,5 +11,7 @@ python-docx       # Word (.docx) support
 python-pptx       # PowerPoint (.pptx) support
 streamlit
 transformers
+streamlit
+transformers
 torch
 torchvision
