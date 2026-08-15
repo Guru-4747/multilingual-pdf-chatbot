@@ -313,19 +313,31 @@ def describe_image_with_gemini(image_bytes, mime_type="image/png", context_hint=
             "Respond in plain text only."
         )
 
-        response = client.models.generate_content(
-            model=GENERATION_MODEL,
-            contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                prompt,
-            ],
-        )
+        import os
+import streamlit as st
+from google import genai
+from google.genai import types
 
-        return clean_text(response.text or "")
+# ==============================
+# GEMINI API KEY
+# ==============================
 
-    except Exception as e:
-        return f"[Image could not be analyzed: {e}]"
+try:
+    api_key = st.secrets["GEMINI_API_KEY"]
+except Exception:
+    api_key = os.getenv("GEMINI_API_KEY")
 
+if not api_key:
+    st.error("Gemini API key not found.")
+    st.info(
+        "Please add GEMINI_API_KEY in "
+        "Streamlit Cloud → Manage app → Settings → Secrets."
+    )
+    st.stop()
+
+client = genai.Client(api_key=api_key)
+
+GENERATION_MODEL = "gemini-2.5-flash"
 
 def ocr_scanned_page_with_gemini(image_bytes, page_number):
     """Full-page OCR for scanned / image-only PDF pages via Gemini vision."""
