@@ -40,7 +40,7 @@ st.set_page_config(
     layout="wide"
 )
 
-GENERATION_MODEL = "gemini-3.6-flash"
+GENERATION_MODEL = "gemini-2.5-flash"
 
 SUPPORTED_EXTENSIONS = [
     "pdf", "docx", "pptx",
