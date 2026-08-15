@@ -1,7 +1,11 @@
 streamlit
-pypdf
-sentence-transformers
+python-dotenv
 faiss-cpu
 numpy
+sentence-transformers
 google-genai
-python-dotenv
+
+# New: multi-format + multimodal support
+pymupdf          # PDF text extraction, page rasterization for scanned pages, embedded image extraction
+python-docx       # Word (.docx) support
+python-pptx       # PowerPoint (.pptx) support
