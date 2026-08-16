@@ -116,6 +116,21 @@ if not api_key:
 
 client = genai.Client(api_key=api_key)
 
+# ==============================
+# GEMINI API KEY
+# ==============================
+
+try:
+    api_key = st.secrets["GEMINI_API_KEY"]
+except Exception:
+    api_key = os.getenv("GEMINI_API_KEY")
+
+if not api_key:
+    st.error("Gemini API key not found.")
+    st.info("Please add GEMINI_API_KEY in Streamlit Cloud → Manage app → Settings → Secrets.")
+    st.stop()
+
+client = genai.Client(api_key=api_key)
 
 # =========================================================
 # MULTILINGUAL EMBEDDING MODEL
@@ -313,31 +328,21 @@ def describe_image_with_gemini(image_bytes, mime_type="image/png", context_hint=
             "Respond in plain text only."
         )
 
-        import os
-import streamlit as st
-from google import genai
-from google.genai import types
-
-# ==============================
-# GEMINI API KEY
-# ==============================
-
-try:
-    api_key = st.secrets["GEMINI_API_KEY"]
-except Exception:
-    api_key = os.getenv("GEMINI_API_KEY")
-
-if not api_key:
-    st.error("Gemini API key not found.")
-    st.info(
-        "Please add GEMINI_API_KEY in "
-        "Streamlit Cloud → Manage app → Settings → Secrets."
+    response = client.models.generate_content(
+        model=GENERATION_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=0.15
+        ),
     )
-    st.stop()
 
-client = genai.Client(api_key=api_key)
+    return response.text
 
-GENERATION_MODEL = "gemini-2.5-flash"
+except Exception as e:
+    st.error("Gemini API Error")
+    st.code(str(e))
+    return "Sorry, I could not generate an answer."
+
 
 def ocr_scanned_page_with_gemini(image_bytes, page_number):
     """Full-page OCR for scanned / image-only PDF pages via Gemini vision."""
