@@ -2,7 +2,7 @@ import os
 import io
 import re
 import csv
-import base64
+import time
 import hashlib
 
 import faiss
@@ -95,6 +95,7 @@ html, body, [class*="css"] { font-family: "Inter", sans-serif; }
 .type-ocr { background: rgba(234,179,8,.18); color: #fde68a; border: 1px solid rgba(234,179,8,.30); }
 .stButton > button { border-radius: 14px; font-weight: 700; border: 1px solid rgba(255,255,255,.08); transition: all .2s ease; }
 .stButton > button:hover { transform: translateY(-2px); box-shadow: 0 10px 25px rgba(124,58,237,.25); }
+.suggest-chip > button { border-radius: 999px !important; background: rgba(124,58,237,.14) !important; color: #ddd6fe !important; font-size: 13px !important; padding: 6px 14px !important; }
 section[data-testid="stSidebar"] { background: linear-gradient(180deg, #0b1020, #111827); border-right: 1px solid rgba(255,255,255,.08); }
 .footer { text-align: center; color: #64748b; padding: 34px 10px 10px; font-size: 12px; line-height: 1.8; }
 </style>
@@ -104,21 +105,8 @@ load_dotenv()
 
 
 # =========================================================
-# API KEY
+# API KEY  (Streamlit secrets first, falls back to .env)
 # =========================================================
-
-api_key = os.getenv("GEMINI_API_KEY")
-
-if not api_key:
-    st.error("Gemini API key not found.")
-    st.info("Create a .env file and add GEMINI_API_KEY=YOUR_KEY")
-    st.stop()
-
-client = genai.Client(api_key=api_key)
-
-# ==============================
-# GEMINI API KEY
-# ==============================
 
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
@@ -127,10 +115,14 @@ except Exception:
 
 if not api_key:
     st.error("Gemini API key not found.")
-    st.info("Please add GEMINI_API_KEY in Streamlit Cloud → Manage app → Settings → Secrets.")
+    st.info(
+        "Add GEMINI_API_KEY to a local .env file, or to "
+        "Streamlit Cloud → Manage app → Settings → Secrets."
+    )
     st.stop()
 
 client = genai.Client(api_key=api_key)
+
 
 # =========================================================
 # MULTILINGUAL EMBEDDING MODEL
@@ -156,7 +148,7 @@ LANGUAGES = {
     "ಕನ್ನಡ (Kannada)": "Kannada",
     "हिन्दी (Hindi)": "Hindi",
     "తెలుగు (Telugu)": "Telugu",
-    "മലയാളం (Malayalam)": "Malayalam"
+    "മലയാളം (Malayalam)": "Malayalam"
 }
 
 
@@ -170,6 +162,7 @@ for key, default in [
     ("index", None),
     ("file_hash", None),
     ("messages", []),
+    ("pending_question", None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -245,6 +238,28 @@ with st.sidebar:
     st.write("🇮🇳 తెలుగు")
     st.write("🇮🇳 മലയാളം")
 
+    if st.session_state.processed:
+        st.divider()
+        st.write("### 💬 Conversation")
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("🗑️ Clear chat", use_container_width=True):
+                st.session_state.messages = []
+                st.rerun()
+        with col_b:
+            transcript = "\n\n".join(
+                f"{'You' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
+                for m in st.session_state.messages
+            ) or "No messages yet."
+            st.download_button(
+                "⬇️ Save chat",
+                data=transcript,
+                file_name="linguadoc_chat.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+
 
 # =========================================================
 # UPLOADER
@@ -312,62 +327,79 @@ def create_chunks(text, page_number, source_type="text", chunk_size=700, overlap
 
 
 # =========================================================
+# GEMINI CALL WRAPPER (retries + never crashes the app)
+# =========================================================
+
+def call_gemini(contents, temperature=0.15, max_retries=3):
+    """Call Gemini with automatic retry on transient errors (e.g. rate limits).
+    Raises the last error if every attempt fails, so callers can decide how to
+    surface it to the user."""
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            return client.models.generate_content(
+                model=GENERATION_MODEL,
+                contents=contents,
+                config=types.GenerateContentConfig(temperature=temperature),
+            )
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+    raise last_error
+
+
+# =========================================================
 # GEMINI VISION HELPERS (image description + OCR)
 # =========================================================
 
 def describe_image_with_gemini(image_bytes, mime_type="image/png", context_hint=""):
     """Ask Gemini to describe an image AND transcribe any visible text (OCR)."""
-    try:
-        prompt = (
-            "Carefully analyze this image, which was extracted from a document"
-            f"{(' ' + context_hint) if context_hint else ''}. "
-            "1) Transcribe any visible text exactly (OCR). "
-            "2) Describe charts, diagrams, tables, photos, or figures in detail, "
-            "including axis labels, numbers, and key relationships if present. "
-            "Be factual and specific — do not guess at content you cannot see clearly. "
-            "Respond in plain text only."
-        )
-
-    response = client.models.generate_content(
-        model=GENERATION_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.15
-        ),
+    prompt = (
+        "Carefully analyze this image, which was extracted from a document"
+        f"{(' ' + context_hint) if context_hint else ''}. "
+        "1) Transcribe any visible text exactly (OCR). "
+        "2) Describe charts, diagrams, tables, photos, or figures in detail, "
+        "including axis labels, numbers, and key relationships if present. "
+        "Be factual and specific — do not guess at content you cannot see clearly. "
+        "Respond in plain text only."
     )
 
-    return response.text
-
-except Exception as e:
-    st.error("Gemini API Error")
-    st.code(str(e))
-    return "Sorry, I could not generate an answer."
+    try:
+        response = call_gemini(
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                prompt,
+            ]
+        )
+        return response.text or ""
+    except Exception as e:
+        st.warning(f"Could not analyze one of the images ({e}). Skipping it and continuing.")
+        return ""
 
 
 def ocr_scanned_page_with_gemini(image_bytes, page_number):
     """Full-page OCR for scanned / image-only PDF pages via Gemini vision."""
-    try:
-        prompt = (
-            f"This is page {page_number} of a scanned document with no selectable text. "
-            "Transcribe ALL visible text exactly as written, preserving reading order, "
-            "including headers, tables, and captions. If there is no readable text, say "
-            "'NO_TEXT_FOUND'. Respond with the transcription only, no commentary."
-        )
+    prompt = (
+        f"This is page {page_number} of a scanned document with no selectable text. "
+        "Transcribe ALL visible text exactly as written, preserving reading order, "
+        "including headers, tables, and captions. If there is no readable text, say "
+        "'NO_TEXT_FOUND'. Respond with the transcription only, no commentary."
+    )
 
-        response = client.models.generate_content(
-            model=GENERATION_MODEL,
+    try:
+        response = call_gemini(
             contents=[
                 types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
                 prompt,
-            ],
+            ]
         )
-
         text = clean_text(response.text or "")
         if "NO_TEXT_FOUND" in text:
             return ""
         return text
-
-    except Exception:
+    except Exception as e:
+        st.warning(f"Could not OCR page {page_number} ({e}). Skipping it.")
         return ""
 
 
@@ -765,7 +797,7 @@ if uploaded_file:
 st.markdown('<div class="section-heading">🌐 Language Support</div>', unsafe_allow_html=True)
 
 lang_cols = st.columns(6)
-for col, language in zip(lang_cols, ["🇬🇧 English", "🇮🇳 தமிழ்", "🇮🇳 ಕನ್ನಡ", "🇮🇳 हिन्दी", "🇮🇳 తెలుగు", "🇮🇳 മലയാళം"]):
+for col, language in zip(lang_cols, ["🇬🇧 English", "🇮🇳 தமிழ்", "🇮🇳 ಕನ್ನಡ", "🇮🇳 हिन्दी", "🇮🇳 తెలుగు", "🇮🇳 മലയാളం"]):
     with col:
         st.markdown(f'<div class="lang-card">{language}</div>', unsafe_allow_html=True)
 
@@ -854,13 +886,17 @@ USER QUESTION:
 {question}
 """
 
-    response = client.models.generate_content(
-        model=GENERATION_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(temperature=0.15),
-    )
-
-    return response.text
+    try:
+        response = call_gemini(prompt)
+        return response.text
+    except Exception as e:
+        st.error(
+            "The AI service returned an error — this is usually a temporary rate "
+            "limit or connectivity issue. Please wait a few seconds and try again."
+        )
+        with st.expander("Technical details"):
+            st.code(str(e))
+        return "⚠️ Sorry, I couldn't generate an answer right now. Please try again in a moment."
 
 
 # =========================================================
@@ -882,55 +918,92 @@ if st.session_state.messages:
 # QUESTION INPUT
 # =========================================================
 
+def ask_and_answer(question):
+    """Runs retrieval + generation for a question and appends it to the chat."""
+    st.session_state.messages.append({"role": "user", "content": question})
+
+    with st.chat_message("user"):
+        st.markdown(question)
+
+    with st.chat_message("assistant"):
+
+        with st.spinner("Searching the document..."):
+            results = search_document(
+                question, st.session_state.chunks, st.session_state.index, top_k
+            )
+
+        with st.spinner("Generating answer with Gemini..."):
+            answer = generate_answer(
+                question, results, LANGUAGES[selected_language], strict=strict_grounding
+            )
+
+        st.markdown(answer)
+
+        st.divider()
+        st.caption("📑 Sources")
+
+        for i, result in enumerate(results):
+            badge_class = {
+                "text": "type-text",
+                "image": "type-image",
+                "ocr": "type-ocr",
+            }.get(result["type"], "type-text")
+            badge_label = {
+                "text": "TEXT",
+                "image": "IMAGE",
+                "ocr": "SCANNED/OCR",
+            }.get(result["type"], "TEXT")
+
+            st.markdown(
+                f'<div class="source-card">'
+                f'<span class="type-badge {badge_class}">{badge_label}</span>'
+                f'<b>{result["page"]}</b> · relevance {result["score"]:.2f}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            with st.expander(f"Preview — {result['page']}", expanded=False):
+                st.write(result["text"])
+
+    st.session_state.messages.append({"role": "assistant", "content": answer})
+
+
 if st.session_state.processed:
+
+    # Quick-start suggestion chips — click to ask instantly
+    if not st.session_state.messages:
+        st.caption("💡 Not sure where to start? Try one of these:")
+        chip_cols = st.columns(3)
+        suggestions = [
+            "📝 Summarize this document",
+            "🔑 What are the key points?",
+            "📊 Explain any charts or images",
+        ]
+        for col, suggestion in zip(chip_cols, suggestions):
+            with col:
+                st.markdown('<div class="suggest-chip">', unsafe_allow_html=True)
+                if st.button(suggestion, use_container_width=True, key=f"chip_{suggestion}"):
+                    st.session_state.pending_question = suggestion.split(" ", 1)[1]
+                st.markdown("</div>", unsafe_allow_html=True)
 
     question = st.chat_input("Ask a question about your document...")
 
+    # A suggestion chip takes priority if one was just clicked
+    if st.session_state.pending_question:
+        question = st.session_state.pending_question
+        st.session_state.pending_question = None
+
     if question:
+        ask_and_answer(question)
 
-        st.session_state.messages.append({"role": "user", "content": question})
-
-        with st.chat_message("user"):
-            st.markdown(question)
-
-        with st.chat_message("assistant"):
-
-            with st.spinner("Searching the document..."):
-                results = search_document(
-                    question, st.session_state.chunks, st.session_state.index, top_k
-                )
-
-            with st.spinner("Generating answer with Gemini..."):
-                answer = generate_answer(
-                    question, results, LANGUAGES[selected_language], strict=strict_grounding
-                )
-
-            st.markdown(answer)
-
-            st.divider()
-            st.caption("📑 Sources")
-
-            for result in results:
-                badge_class = {
-                    "text": "type-text",
-                    "image": "type-image",
-                    "ocr": "type-ocr",
-                }.get(result["type"], "type-text")
-                badge_label = {
-                    "text": "TEXT",
-                    "image": "IMAGE",
-                    "ocr": "SCANNED/OCR",
-                }.get(result["type"], "TEXT")
-
-                st.markdown(
-                    f'<div class="source-card">'
-                    f'<span class="type-badge {badge_class}">{badge_label}</span>'
-                    f'<b>{result["page"]}</b> · relevance {result["score"]:.2f}'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
-
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+    # Let the user regenerate the last answer (handy after a transient API error)
+    if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
+        last_user_question = next(
+            (m["content"] for m in reversed(st.session_state.messages) if m["role"] == "user"),
+            None,
+        )
+        if last_user_question and st.button("🔄 Regenerate last answer"):
+            st.session_state.messages = st.session_state.messages[:-1]
+            ask_and_answer(last_user_question)
 
 
 # =========================================================
@@ -991,7 +1064,7 @@ st.markdown("""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━<br>
 📚 <b>LinguaDoc AI</b><br>
 Multilingual • Multimodal • Document-Aware<br>
-English • தமிழ் • ಕನ್ನಡ • हिन्दी • తెలుగు • മലയാളం<br>
+English • தமிழ் • ಕನ್ನಡ • हिन्दी • తెలుగు • മലയാളം<br>
 Built with Python • Streamlit • FAISS • Sentence Transformers • PyMuPDF • Gemini Vision
 </div>
 """, unsafe_allow_html=True)
