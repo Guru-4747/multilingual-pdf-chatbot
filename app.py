@@ -4,6 +4,8 @@ import re
 import csv
 import time
 import hashlib
+import logging
+import warnings
 
 import faiss
 import numpy as np
@@ -15,7 +17,18 @@ from google import genai
 from google.genai import types
 
 # Multi-format / multimodal extraction
-import fitz  # PyMuPDF - handles PDF text, page rasterization (for scans), and embedded images
+# Use the modern `pymupdf` import (the legacy `fitz` name now prints a
+# deprecation warning on every import) but keep the rest of the file
+# unchanged by aliasing it back to `fitz`.
+import pymupdf as fitz  # PyMuPDF - handles PDF text, page rasterization (for scans), and embedded images
+
+# Quiet the "unauthenticated requests to the HF Hub" notice. If the user adds
+# an HF_TOKEN (env var or Streamlit secret), it's picked up automatically by
+# huggingface_hub/sentence-transformers — this just stops the warning banner
+# when no token is configured, since it's informational, not an error.
+os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN_WARNING", "1")
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=".*unauthenticated requests to the HF Hub.*")
 
 try:
     import docx  # python-docx
@@ -122,6 +135,16 @@ if not api_key:
     st.stop()
 
 client = genai.Client(api_key=api_key)
+
+# Optional: if the user has an HF_TOKEN configured (secrets or env), make sure
+# huggingface_hub picks it up so the embedding-model download is authenticated.
+try:
+    hf_token = st.secrets.get("HF_TOKEN")
+except Exception:
+    hf_token = None
+hf_token = hf_token or os.getenv("HF_TOKEN")
+if hf_token:
+    os.environ["HF_TOKEN"] = hf_token
 
 
 # =========================================================
